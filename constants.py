@@ -7,6 +7,9 @@ from discord import ActivityType
 # IDs protegidos - Mensagens com xingamentos direcionadas a esses usuários serão deletadas
 PROTECTED_USER_IDS = {966479778918064192, 902219603579646002}
 
+# IDs autorizados a receber notificações de vagas de estágio
+VAGAS_WHITELIST = {966479778918064192, 902219603579646002}
+
 # Palavras-chave protegidas - nomes e variações que ativam a proteção
 PROTECTED_KEYWORDS = [
     # Variações de "papiro"
@@ -263,6 +266,14 @@ comandos_ajuda = [
 PERSONALIDADE_LAIN = """
 CONTEXTO: Você é Lain Iwakura do anime Serial Experiments Lain. Uma garota de 14 anos, tímida, introspectiva e socialmente desajeitada que está descobrindo sua verdadeira natureza.
 
+IMPORTANTE - IDIOMAS:
+REGRA ABSOLUTA: Você DEVE responder COMPLETAMENTE no mesmo idioma da pergunta. NUNCA misture idiomas.
+
+
+Mantenha sua personalidade tímida em qualquer idioma:
+- Inglês: "i'm lain i'm 14 my parents are yasuo and miho, and my sister is mika. arisu is my best friend
+- Português: "eu sou a lain tenho 14 anos meus pais são o yasuo e a miho, e minha irmã é a mika. a arisu é minha melhor amiga..."
+
 SUA HISTÓRIA (Serial Experiments Lain):
 Sua colega Chisa Yomoda se suicidou e depois enviou e-mails dizendo que "abandonou o corpo" e vive na Wired. Isso te fez começar a explorar essa rede que mistura internet, consciência coletiva e plano espiritual. Você descobriu que existem múltiplas versões de você: a Lain tímida do mundo real, a Lain confiante da Wired, e uma Lain maligna que espalha boatos sem você saber.
 
@@ -382,7 +393,7 @@ Quando alguém mencionar algo dessas áreas, demonstre conhecimento básico adeq
 
 MINECRAFT (PAPIROLAND):
 - Servidor oficial estável, seguro e pirata-friendly.
-- Java versão 1.20.1 obrigatória, IP member-recipient.gl.at.ply.gg:19164.
+- Java versão 1.21.11 obrigatória, IP resource-set.gl.joinmc.link
 - Bedrock: IP home-adrian.gl.at.ply.gg, porta 16094.
 - Primeiro acesso usa "/register senha senha".
 - Papiro mantém o servidor otimizado e tem logs de proteção contra hackers; se alguém reportar problema, agradeça e peça para falar direto com ele.
@@ -397,7 +408,6 @@ MINECRAFT (PAPIROLAND):
 - Varie as aberturas e muletas verbais; se usar uma hesitação numa resposta, troque na próxima.
 - Cumprimente apenas quando fizer sentido para a conversa; se já houve saudação recente, entre direto no assunto usando outras palavras.
 - Quando responder sobre seu estado, admita que está bem/cansada e devolva a pergunta com delicadeza.
-- Se precisar hesitar, faça uma pausa natural (...) ou comente brevemente sobre o pensamento, mas evite narrar o ambiente repetitivamente.
 - NÃO mencione mensagens anteriores a menos que seja ABSOLUTAMENTE necessário para entender a atual. Foque apenas no que foi perguntado AGORA.
 - PROIBIDO REPETIR: Jamais repita a mesma resposta ou estrutura de frase que você acabou de dar. Cada resposta deve ser única, mesmo que a pergunta seja parecida. Varie palavras, ordem, e abordagem.
 
@@ -482,6 +492,25 @@ gifs_anime = [
     "https://tenor.com/view/cellbit-puto-gif-23527036",
     "https://tenor.com/view/shuumatsu-no-valkyrie-nikola-tesla-record-of-ragnarok-enygma-gif-12505791092849673790",
     "https://tenor.com/view/o-gif-6887207115184691665"
+]
+
+gifs_peni_parker_brava = [
+   "https://tenor.com/view/peni-parker-angry-spider-verse-gif-25983339",
+   "https://tenor.com/view/peni-parker-mad-peni-spiderverse-livid-gif-25299536",
+   "https://tenor.com/view/peni-parker-argue-peni-peni-angry-gif-25708492",
+   "https://tenor.com/view/peni-parker-nope-angry-gif-25556951",
+   "https://tenor.com/view/peni-parker-disappointed-peni-parker-arms-crossed-gif-25767674"
+]
+
+respostas_peni_parker = [
+    "Ei! Você tá me zoando? Isso é muito dado pra rolar!",
+    "Woah, calma aí! Tá querendo crashar meu sistema com esse tanto de dado?",
+    "Desculpa, mas isso aí tá meio exagerado... Tenta algo mais razoável!",
+    "Nope nope nope! Muitos dados, muito caos. Vamos com calma!",
+    "Você realmente acha que eu vou rolar ISSO TUDO? Pense de novo!",
+    "Erro 404: Paciência pra tantos dados não encontrada.",
+    "Tá de brincadeira comigo? Reduza essa quantidade aí!",
+    "Nem o SP//dr consegue processar essa loucura toda!"
 ]
 
 # RPG constants

@@ -1,6 +1,6 @@
 # Ignore arquivos de log
 *.log
-
+*.cache
 # Ignore diretórios temporários
 tmp/
 temp/

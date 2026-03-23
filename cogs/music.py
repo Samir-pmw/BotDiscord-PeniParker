@@ -979,16 +979,33 @@ class Music(commands.Cog):
             if guild and guild.voice_client:
                 voice_channel = guild.voice_client.channel
                 voice_client = guild.voice_client
+                
+                # Conta apenas membros que não são bots
+                if voice_channel:
+                    members_in_voice = len([m for m in voice_channel.members if not m.bot])
+                else:
+                    members_in_voice = 0
+                
+                is_alone = members_in_voice == 0
+                
+                # Se está sozinho (sem nenhum humano), desconecta imediatamente
+                if is_alone:
+                    await self._reset_player(guild)
+                    await self._disconnect_player(guild)
+                    registrar_log(f"Desconectado de '{guild.name}' - nenhum usuário no canal.", 'info')
+                    if guild_id in self.last_activity:
+                        del self.last_activity[guild_id]
+                    continue
+                
+                # Se está tocando ou tem fila, atualiza atividade
                 if voice_client.is_playing() or voice_client.is_paused() or self.queue.get(guild_id):
                     self.last_activity[guild_id] = discord.utils.utcnow()
                     continue
-                members_in_voice = len(voice_channel.members) if voice_channel else 0
-                is_alone = members_in_voice <= 1
                 
                 inactive_time = (discord.utils.utcnow() - self.last_activity[guild_id]).total_seconds()
 
-                # Desconecta se sozinho por > 1 min OU inativo por > 3 min
-                if (is_alone and inactive_time > 60) or inactive_time > 180:
+                # Desconecta se inativo por > 3 min
+                if inactive_time > 180:
                     await self._reset_player(guild)
                     await self._disconnect_player(guild)
                     registrar_log(f"Desconectado de '{guild.name}' por inatividade.", 'info')
