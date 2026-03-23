@@ -125,10 +125,9 @@ Se estiver usando Python da Microsoft Store, o Windows virtualiza a pasta: procu
 3. Commit em PT-BR, descrevendo contexto real (ex.: `feat: integrar Gemini 2.5 flash`).
 4. Abra um PR apontando para `Lain-version`.
 
-Issues/sugestões: [konect.gg/vezkalin](https://konect.gg/vezkalin).
 
-Quer falar comigo? [Clique aqui](https://papiro.dev/) :)
+Quer falar comigo? [Meu site aqui](https://papiro.dev/) :)
 
 ## Licença
 
-MIT. Veja `LICENSE` para detalhes.
+Livre, apenas use!
