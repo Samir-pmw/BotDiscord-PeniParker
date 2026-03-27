@@ -1,132 +1,179 @@
-# LainBot (ex-PeniBot)
+# LainBot
 
 <p align="center">
    <img src="https://i.pinimg.com/736x/6c/ef/fb/6ceffb9310699f63aa4cfe58b67bf2dc.jpg" width="28%" alt="Lain" />
 </p>
 
-LainBot é um bot multifuncional para Discord inspirado em **Serial Experiments Lain**. Ele combina:
+Bot de Discord com a personalidade da Lain Iwakura de *Serial Experiments Lain*. Combina:
 
-- Persona conversacional com **Gemini 2.5 Flash**, simulando a Lain tímida, humana e introspectiva.
-- Ferramentas de RPG (fichas, inventário, rolagens livres `xDy`).
-- Player de música com suporte ao YouTube/Spotify + fila e comandos de moderação básicos.
+- Conversação com **Google Gemini**, simulando a Lain tímida e introspectiva.
+- Sistema de **música** com suporte a YouTube e Spotify (yt-dlp + FFmpeg).
+- Ferramentas de **RPG** (fichas, inventário, rolagens `xDy`).
+- **Moderação** automática com detecção de conteúdo nocivo via IA.
+- Busca de perfis no **op.gg** (LoL e Valorant).
 
-> A base continua sendo o PeniBot, porém a personalidade e as integrações foram migradas para a temática “Lain no Wired”.
-
-## Funcionalidades principais
-
-| Área | Destaques |
-| --- | --- |
-| Chat/Gemini | Respostas roleplay com contexto `PERSONALIDADE_LAIN`, logs detalhados (`%APPDATA%\LainBot\logs`). Ajuste fino via variáveis `GEMINI_*`. |
-| RPG | `/rolar`, `/moeda`, `/painel_rpg`, inventário, fichas persistidas em `%APPDATA%\LainBot`. |
-| Música | `/tocar`, `/parar`, suporte ao Spotify (via ID/secret) e Tenor para GIFs. |
-| Administração | `/ban`, `/limpar`, automação contra xingamentos com deleção + resposta temática. |
-
-### Outros comandos úteis
-
-- `/spam_singed_gremista`, `/limpar`, `/ban`, `/ajuda`.
-- `xDy` direto no texto (sem slash).
-- Menção + insulto → mensagem é apagada e o bot responde curto + GIF da Lain.
+---
 
 ## Pré-requisitos
 
-- Python **3.10+** (testado com 3.11).
-- FFmpeg (mesmos passos descritos abaixo).
-- Credenciais para Discord, Google AI Studio (Gemini), Spotify e Tenor.
+- Python **3.11** (recomendado; outras versões podem causar bugs no voice do discord.py)
+- FFmpeg instalado e no PATH (ou configure via `.env`)
+- Credenciais: Discord, Google AI Studio (Gemini), Tenor, Spotify
 
-### FFmpeg no Windows
-1. Baixe o build estático em [gyan.dev](https://www.gyan.dev/ffmpeg/builds/).
-2. Extraia para algo como `C:\ffmpeg-2025-11-17-git-...`.
-3. Adicione `C:\ffmpeg-...\bin` ao `Path` **ou** defina no `.env`:
-   ```
-   PENIBOT_FFMPEG=C:\\ffmpeg-2025-11-17-git-e94439e49b-essentials_build\\bin\\ffmpeg.exe
-   PENIBOT_FFPROBE=C:\\ffmpeg-2025-11-17-git-e94439e49b-essentials_build\\bin\\ffprobe.exe
-   ```
-4. Reinicie o PowerShell e valide com `ffmpeg -version`.
+---
 
-## Instalação
+## Rodando localmente
 
-```powershell
+### 1. Clone e instale dependências
+
+```bash
 git clone https://github.com/Samir-pmw/BotDiscord-PeniParker.git
 cd BotDiscord-PeniParker
 git checkout Lain-version
 python -m venv .venv
+# Windows:
 .\.venv\Scripts\activate
+# Linux/macOS:
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Configurando o `.env`
+### 2. Configure o `.env`
 
-```
-DISCORD_TOKEN=seu_token
-GEMINI_TOKEN=sua_chave_do_AI_Studio
-GEMINI_MODEL=models/gemini-2.5-flash     # opcional, já é o padrão
-GEMINI_TEMPERATURE=0.55                  # opcional
-GEMINI_TOP_P=0.85
-GEMINI_TOP_K=18
-GEMINI_MAX_OUTPUT_TOKENS=150
-SPOTIFY_CLIENT_ID=opcional
-SPOTIFY_CLIENT_SECRET=opcional
-TENOR_TOKEN=sua_chave
-GOOGLE_DRIVE_FOLDER_ID=opcional
-PENIBOT_FFMPEG=.../ffmpeg.exe
-PENIBOT_FFPROBE=.../ffprobe.exe
+```bash
+cp .env.example .env
 ```
 
-#### Sobre o Gemini
+Edite `.env` com seus tokens. Variáveis obrigatórias:
 
-1. Ative `Generative Language API` no [Google AI Studio](https://aistudio.google.com/).
-2. Gere uma chave e copie para `GEMINI_TOKEN`.
-3. Liste os modelos disponíveis com:
-   ```powershell
-   Invoke-WebRequest -Headers @{"x-goog-api-key"=$env:GEMINI_TOKEN} -Uri "https://generativelanguage.googleapis.com/v1beta/models" | Select-String gemini
-   ```
-4. Se quiser outro modelo (ex.: `models/gemini-2.5-pro`), ajuste `GEMINI_MODEL`.
+```
+DISCORD_TOKEN=seu_token_aqui
+GEMINI_TOKEN=sua_chave_do_ai_studio
+```
 
-O arquivo `utils.py` normaliza o nome e aceita overrides de temperatura/top_p/top_k/tokens sem precisar mudar código. Valores inválidos são ignorados com um `logging.warning`.
+Opcionais mas recomendadas:
 
-### Executando
+```
+TENOR_TOKEN=sua_chave_tenor
+SPOTIFY_CLIENT_ID=seu_id_spotify
+SPOTIFY_CLIENT_SECRET=seu_secret_spotify
+```
 
-```powershell
+### 3. FFmpeg
+
+**Windows:** Baixe em [gyan.dev](https://www.gyan.dev/ffmpeg/builds/), extraia e adicione `bin/` ao PATH, **ou** defina no `.env`:
+
+```
+PENIBOT_FFMPEG=C:\ffmpeg\bin\ffmpeg.exe
+PENIBOT_FFPROBE=C:\ffmpeg\bin\ffprobe.exe
+```
+
+**Linux/macOS:** `sudo apt install ffmpeg` ou `brew install ffmpeg`
+
+### 4. Execute
+
+```bash
 python main.py
 ```
 
-Ao iniciar, o bot registra:
-- Caminho efetivo de `%APPDATA%` usado para cache/logs.
-- Resultado do carregamento do `.env` (tokens ausentes geram `logging.error`).
-- Atividade do Discord configurada (`musicas_atividade`).
+---
 
-## Estrutura de dados
+## Rodando com Docker
 
-```
-%APPDATA%\LainBot
-├─ logs\bot_logs.txt
-├─ music_cache\
-├─ fichas\<guild_id>.json
-└─ inventarios\<guild_id>.json
+A forma mais simples e recomendada — sem precisar instalar Python, FFmpeg ou libopus na máquina.
+
+### 1. Configure o `.env`
+
+```bash
+cp .env.example .env
+# edite .env com seus tokens
 ```
 
-Se estiver usando Python da Microsoft Store, o Windows virtualiza a pasta: procure em `C:\Users\VOCÊ\AppData\Local\Packages\PythonSoftwareFoundation...\LocalCache\Roaming\LainBot`.
+### 2. Suba o container
 
-## Uso rápido
+```bash
+docker compose up --build
+```
+
+Para rodar em background:
+
+```bash
+docker compose up --build -d
+docker compose logs -f lainbot
+```
+
+### 3. Parar
+
+```bash
+docker compose down
+```
+
+### Comandos úteis
+
+```bash
+# Rebuild sem cache (após mudar requirements.txt):
+docker compose build --no-cache
+
+# Ver uso de recursos:
+docker stats lainbot
+
+# Reiniciar o bot:
+docker compose restart lainbot
+```
+
+### Dados persistidos
+
+Os volumes Docker mantêm os dados entre rebuilds:
+
+| Volume | Caminho no container | Conteúdo |
+| --- | --- | --- |
+| `lainbot_data` | `/app/data` | Fichas de RPG, inventários, cache do Wikipedia |
+| `lainbot_logs` | `/app/logs` | Logs do bot (`bot_logs.txt`) |
+
+---
+
+## Estrutura de dados (local)
+
+```
+data/
+├── fichas/<guild_id>.json
+├── inventarios/<guild_id>.json
+├── knowledge/           ← cache do Wikipedia
+└── music_cache/         ← áudios baixados (TTL 6h)
+logs/
+└── bot_logs.txt
+```
+
+---
+
+## Comandos
 
 | Comando | Descrição |
 | --- | --- |
-| `/rolar 2d6+3` | Rola dois dados d6 e soma 3. Também funciona escrevendo `2d6+3` no chat. |
+| `/tocar <url>` | Adiciona à fila. Aceita YouTube e Spotify. |
+| `/parar` | Para música e limpa a fila. |
+| `/rolar 2d6+3` | Rola dados. Também funciona escrevendo `2d6+3` direto no chat. |
 | `/moeda` | Cara ou coroa. |
-| `/tocar <url>` | Adiciona à fila. Aceita YouTube/Spotify. |
-| `/parar` | Limpa a fila/voz (usado para destravar). |
-| `/ban` / `/limpar` | Moderar. |
-| menção + mensagem | Lain responde via Gemini. Xingamentos são deletados com resposta curta + GIF. |
+| `/painel_rpg` | Ficha de personagem. |
+| `/lol <nome>` | Perfil de LoL via op.gg. |
+| `/valorant <nome#tag>` | Perfil de Valorant via op.gg. |
+| `/ban` / `/limpar` | Moderação. |
+| `/ajuda` | Lista de comandos. |
+| `/doar` | Informações de doação. |
+| Menção + mensagem | Lain responde via Gemini. |
+
+Easter egg: `duvido` no chat → resposta automática.
+
+---
 
 ## Contribuindo
 
 1. Faça fork.
 2. Crie branch (`git checkout -b feat/nova-ideia`).
-3. Commit em PT-BR, descrevendo contexto real (ex.: `feat: integrar Gemini 2.5 flash`).
+3. Commit em PT-BR com contexto real (ex: `feat: adicionar comando /wiki`).
 4. Abra um PR apontando para `Lain-version`.
 
-
-Quer falar comigo? [Meu site aqui](https://papiro.dev/) :)
+Quer falar comigo? [papiro.dev](https://papiro.dev/) :)
 
 ## Licença
 

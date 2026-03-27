@@ -26,3 +26,12 @@ bot_logs.txt
 __pycache__/
 *.pyc
 desktop.ini
+
+# Binários Windows (libopus vem do sistema via apt no container)
+bins/
+
+# FFmpeg bundado para Windows (não commitar no repo)
+ffmpeg-*/
+
+# Ferramentas externas
+get-shit-done/

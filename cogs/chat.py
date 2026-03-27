@@ -7,9 +7,11 @@ from collections import deque
 from datetime import datetime
 from typing import Optional
 
-# Importa de seus arquivos customizados
-from utils import obter_resposta, obter_resposta_com_contexto, registrar_log, buscar_gif
+from utils import obter_resposta, obter_resposta_com_contexto, registrar_log, buscar_gif, split_text, _tentar_modelo_simples, obter_resposta_com_imagem
 from constants import PROTECTED_USER_IDS, XINGAMENTOS, PROTECTED_KEYWORDS
+
+# Compilado uma vez no nível do módulo para não recompilar a cada mensagem
+TENOR_RE = re.compile(r'(https://tenor\.com/view/\S+)', re.IGNORECASE)
 
 class Chat(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -20,6 +22,42 @@ class Chat(commands.Cog):
         self.user_ips: dict[int, str] = {}
         # Memória de fatos aprendidos por canal (máximo 20 fatos)
         self.channel_facts: dict[int, list[str]] = {}
+        
+        # Cooldown por canal: timestamp da última resposta espontânea
+        self._espontaneo_cooldown: dict[int, float] = {}
+        self._espontaneo_ativo: dict[int, bool] = {}  # True por padrão
+        self._ESPONTANEO_CHANCE = 0.04      # 0.04 4% de chance
+        self._ESPONTANEO_COOLDOWN_SEG = 600     # 10 minutos entre respostas no m   esmo canal
+
+        # Canal/usuário em conversa ativa com o bot
+        # chave: (channel_id, user_id) → timestamp do último msg
+        self._conversas_ativas: dict[tuple[int, int], float] = {}
+        self._CONVERSA_TIMEOUT_SEG = 300  # 5 minutos em vez de 2
+
+    def _em_conversa_ativa(self, message: discord.Message) -> bool:
+        """Retorna True se o usuário está em conversa ativa com o bot no canal."""
+        import time as _time
+        chave = (message.channel.id, message.author.id)
+        ultimo = self._conversas_ativas.get(chave, 0)
+        if _time.time() - ultimo > self._CONVERSA_TIMEOUT_SEG:
+            self._conversas_ativas.pop(chave, None)
+            return False
+        
+        # Se menciona outra pessoa (e não o bot), não é com a Lain
+        if message.mentions and self.bot.user not in message.mentions:
+            return False
+            
+        return True
+
+    def _atualizar_conversa(self, message: discord.Message) -> None:
+        """Marca o usuário como em conversa ativa."""
+        import time as _time
+        chave = (message.channel.id, message.author.id)
+        self._conversas_ativas[chave] = _time.time()
+
+    def _encerrar_conversa(self, message: discord.Message) -> None:
+        chave = (message.channel.id, message.author.id)
+        self._conversas_ativas.pop(chave, None)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -28,8 +66,80 @@ class Chat(commands.Cog):
         if message.author == self.bot.user:
             return
         
+        # === TOGGLE DE RESPOSTAS ESPONTÂNEAS ===
+        eh_dm = isinstance(message.channel, discord.DMChannel)
+        foi_mencionado = self.bot.user.mentioned_in(message)
+        em_conversa = self._em_conversa_ativa(message)
+
+        # Detecta encerramento de conversa
+        if em_conversa and not foi_mencionado:
+            conteudo_lower = message.content.lower()
+            padroes_encerrar = [
+                r'\b(tchau|flw|falou|até|ata|valeu|obg|obrigad|bye)\b',
+                r'\b(era isso|era só isso|só isso|tá bom|tá ótimo|entendi|ok|oks)\b',
+            ]
+            if any(re.search(p, conteudo_lower) for p in padroes_encerrar):
+                self._encerrar_conversa(message)
+                em_conversa = False
+
+        if foi_mencionado:
+            conteudo_lower = message.content.lower()
+            
+            # Padrões para DESATIVAR
+            padroes_desativar = [
+                r'\b(cala?|cale?)\s+(a\s+)?boca\b',
+                r'\bpare?\s+de\s+responder\b',
+                r'\bshut\s+(the\s+fuck\s+)?up\b',
+                r'\bfica\s+quiet[ao]\b',
+                r'\bpara\s+de\s+falar\b',
+                r'\bshutup\b',
+                r'\bstfu\b',
+            ]
+            
+            # Padrões para ATIVAR
+            padroes_ativar = [
+                r'\bpode\s+falar\b',
+                r'\bvolta\s+(a\s+)?falar\b',
+                r'\bresponde\s+de\s+novo\b',
+                r'\bativa\s+(as\s+)?respostas?\b',
+                r'\bpode\s+responder\b',
+                r'\bvolta\s+a\s+responder\b',
+                r'\bdesativa\s+o\s+silêncio\b',
+            ]
+            
+            guild_id = message.guild.id if message.guild else message.channel.id
+            
+            if any(re.search(p, conteudo_lower) for p in padroes_desativar):
+                self._espontaneo_ativo[guild_id] = False
+                gif_url = "https://tenor.com/view/lain-can-you-shut-up-meme-gif-8093087596513512914"
+                respostas = [
+                    "tá bom.",
+                    "tô quieta.",
+                    "beleza.",
+                    "certo.",
+                    "ok.",
+                    "entendido.",
+                ]
+                await message.reply(random.choice(respostas))
+                await message.channel.send(gif_url)
+                return
+            
+            if any(re.search(p, conteudo_lower) for p in padroes_ativar):
+                self._espontaneo_ativo[guild_id] = True
+                gif_url = "https://tenor.com/view/lain-lain-iwakura-serial-experiments-lain-lain-dance-anime-dance-gif-2931875682258517552"
+                respostas = [
+                    "tô aqui.",
+                    "voltei.",
+                    "ok, tô de volta.",
+                    "pode falar.",
+                    "tô ouvindo.",
+                ]
+                await message.reply(random.choice(respostas))
+                await message.channel.send(gif_url)
+                return
+        
         # Verifica ações físicas inapropriadas direcionadas ao bot usando IA
-        if self.bot.user.mentioned_in(message) or self.bot.user.name.lower() in message.content.lower():
+        if foi_mencionado or self.bot.user.name.lower() in message.content.lower():
             tem_acao_fisica = await self._analisar_acao_fisica_inapropriada(
                 message.content,
                 self.bot.config.get('gemini_token')
@@ -67,7 +177,6 @@ class Chat(commands.Cog):
         
         # Verifica palavras-chave protegidas na mensagem
         if not mentioned_protected:
-            from constants import PROTECTED_KEYWORDS
             message_lower = message.content.lower()
             # Remove espaços, caracteres repetidos e não-alfanuméricos para detectar bypass
             # Ex: "s aaa m i r" -> "samir", "s-a-m-i-r" -> "samir"
@@ -187,10 +296,49 @@ class Chat(commands.Cog):
                         registrar_log(f"Erro ao processar mensagem ofensiva aos IDs protegidos: {exc}", 'error')
                     
                     return  # Não processa mais nada dessa mensagem
+ 
+        # === LEITURA DE IMAGENS ===
+        imagens_contexto = None
 
-        # Verifica se o bot foi mencionado na mensagem
-        if self.bot.user.mentioned_in(message):
-            # Pega o token do Gemini da configuração do bot
+        async def _tentar_extrair_imagem(attachments):
+            for attachment in attachments:
+                nome = attachment.filename.lower()
+                # GIF ou Vídeo — não processa visualmente
+                if any(nome.endswith(ext) for ext in ('.gif', '.mp4', '.mov', '.webm')):
+                    return "gif"
+                # Imagem estática — processa normalmente
+                if any(nome.endswith(ext) for ext in ('.png', '.jpg', '.jpeg', '.webp')):
+                    if attachment.size > 4 * 1024 * 1024:
+                        registrar_log(f"Imagem muito grande ({attachment.size} bytes), ignorando.", 'warning')
+                        continue
+                    try:
+                        import base64
+                        img_data = await attachment.read()
+                        img_b64 = base64.b64encode(img_data).decode('utf-8')
+                        content_type = "image/png" if nome.endswith('.png') else "image/jpeg"
+                        return (img_b64, content_type)
+                    except Exception as exc:
+                        registrar_log(f"Erro ao ler imagem: {exc}", 'warning')
+            return None
+
+        # Verifica attachments da mensagem atual
+        if message.attachments:
+            imagens_contexto = await _tentar_extrair_imagem(message.attachments)
+
+        # Se não achou, verifica mensagem referenciada (reply em cima de uma imagem)
+        if not imagens_contexto and message.reference:
+            try:
+                ref_msg = message.reference.resolved
+                if ref_msg is None:
+                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                if ref_msg and ref_msg.attachments:
+                    imagens_contexto = await _tentar_extrair_imagem(ref_msg.attachments)
+            except Exception as exc:
+                registrar_log(f"Erro ao buscar imagem da mensagem referenciada: {exc}", 'warning')
+
+        # Responde se mencionado OU se está em conversa ativa OU se é DM
+        if foi_mencionado or em_conversa or eh_dm:
+            # Pela o token do Gemini da configuração do bot
             gemini_token = self.bot.config['gemini_token']
             if not gemini_token:
                 registrar_log("Token do Gemini não configurado.", 'error')
@@ -278,26 +426,85 @@ class Chat(commands.Cog):
                 if facts:
                     facts_block = "\n\nFATOS QUE VOCÊ APRENDEU (use quando relevante):\n" + "\n".join([f"- {fact}" for fact in facts[-15:]])
                 
+                # Adiciona contextos específicos
+                contexto_dm = ""
+                if eh_dm:
+                    contexto_dm = (
+                        "Você está em conversa PRIVADA (DM) com essa pessoa. "
+                        "Seja um pouco mais aberta e pessoal que no servidor, mas sem perder sua essência. "
+                        "Não há outros usuários vendo — é só vocês duas.\n\n"
+                    )
+
                 prompt = (
-                    "Histórico recente do chat (do mais antigo para o mais recente):\n"
+                    contexto_dm
+                    + f"Contexto do canal (mais antigo → mais recente):\n"
                     + "\n".join(context_lines)
-                    + "\n" + realtime_info
-                    + ("\n" + mention_reference_block if mention_reference_block else "")
-                    + ("\n" + memory_notes if memory_notes else "")
+                    + f"\n{realtime_info}"
+                    + (f"\n{mention_reference_block}" if mention_reference_block else "")
+                    + (f"\n{memory_notes}" if memory_notes else "")
                     + facts_block
-                    + "\n\nQuem acabou de falar foi "
-                    + author_name
-                    + ". Responda como Lain contemplando todo o contexto sem separar a pergunta em partes"
-                    + " e demonstrando que sabe quem está falando agora."
-                    + " Se isso for uma continuação de conversa, não use 'oi' ou saudações; vá direto ao assunto e varie as aberturas." 
-                    + " Mostre que lembra de detalhes do que a pessoa disse."
-                    + " Não repita o nome/apelido da pessoa que acabou de falar."
-                    + " IMPORTANTE: Se alguém te ensinar algo sobre você (rank, gostos, hábitos), ACEITE e use diretamente."
-                    + " Quando perguntarem sobre esses fatos aprendidos, responda DE FORMA CURTA E DIRETA sem explicações extras."
-                    + " Exemplo: 'qual seu rank?' → 'esmeralda.' (não precisa explicar que não joga ou que alguém disse)"
+                    + f"\n\nA mensagem acima foi de: {author_name}\n"
+                    + "Responda como Lain. Foque só no que foi perguntado agora — não resuma o histórico nem repita o que já disse antes. "
+                    + "Se for continuação de conversa, entre direto no assunto sem saudação. "
+                    + "Se alguém te ensinou algo sobre você nessa conversa, use esse fato diretamente quando perguntado, sem explicar de onde veio.\n"
+                    + "SEPARADOR DE MENSAGENS: quando quiser enviar duas mensagens separadas use exatamente '---BREAK---'. "
+                    + "Nunca escreva a palavra BREAK sozinha — use o separador completo ou não use nada."
+                    + "Fale naturalmente — não force referências à Wired, Navi ou lore do anime em conversa casual. "
+                    + "Se o assunto não for tecnologia ou a Wired, responda como uma pessoa normal responderia.\n"
+                    + "Respostas curtas para pedidos simples — 'dance' merece no máximo 1-2 frases, não um parágrafo. "
+                    + "Só desenvolva quando a pergunta realmente pedir desenvolvimento."
                 )
 
-                resposta = obter_resposta_com_contexto(prompt, gemini_token)
+                # Se tem GIF/Vídeo ou Imagem, ajusta o prompt ou usa visão
+                if imagens_contexto == "gif":
+                    prompt += "\n\nOBSERVAÇÃO: O usuário enviou um GIF ou Vídeo. Você sabe que tem um arquivo de mídia animada mas não consegue ver o conteúdo visual dele — admita isso se for relevante."
+                    # No caso de GIF, volta para processamento de texto normal
+                    resposta = obter_resposta_com_contexto(prompt, gemini_token)
+                elif imagens_contexto:
+                    img_b64, content_type = imagens_contexto
+                    from utils import obter_resposta_com_imagem
+
+                    # Mensagem do usuário sem as menções ao bot
+                    mensagem_limpa = message_content
+                    for pattern in [f'<@{self.bot.user.id}>', f'<@!{self.bot.user.id}>']:
+                        mensagem_limpa = mensagem_limpa.replace(pattern, '').strip()
+
+                    # Detecta se é uma planilha/tabela/documento
+                    mensagem_lower = mensagem_limpa.lower()
+                    eh_documento = any(palavra in mensagem_lower for palavra in [
+                        'planilha', 'tabela', 'dados', 'número', 'numero', 'analise', 
+                        'analisa', 'leia', 'extrai', 'lista', 'relatório'
+                    ])
+
+                    if eh_documento:
+                        prompt_imagem = (
+                            f"{author_name} te enviou uma imagem com dados/tabela"
+                            + (f" e pediu: \"{mensagem_limpa}\"" if mensagem_limpa else ".")
+                            + "\n\nLeia os dados com PRECISÃO — transcreva exatamente o que está escrito, "
+                            + "sem inventar ou aproximar valores. Se não conseguir ler algum campo, diz que não ficou claro."
+                            + "\nFormate a resposta de forma legível."
+                        )
+                    else:
+                        prompt_imagem = (
+                            f"{author_name} te enviou uma imagem"
+                            + (f" com a mensagem: \"{mensagem_limpa}\"" if mensagem_limpa else " sem texto.")
+                            + "\n\nReaja à imagem de forma natural e curta — comente o que viu, "
+                            + "reconheça se for de algum anime/game/arte que você conhece, "
+                            + "ou admita que não reconhece e comente o visual. "
+                            + "Máximo 2 frases. Não force referências à Wired a menos que a imagem realmente tenha relação."
+                        )
+                    
+                    registrar_log(f"Processando imagem {content_type}, tamanho b64: {len(img_b64)}", 'info')
+                    resposta = obter_resposta_com_imagem(prompt_imagem, img_b64, content_type, gemini_token)
+                    registrar_log(f"Resposta imagem: {'ok' if resposta else 'None'}", 'info')
+                    
+                    if not resposta:
+                        # Fallback: responde sem ver a imagem
+                        registrar_log("Falha ao processar imagem, caindo no fluxo normal.", 'warning')
+                        resposta = obter_resposta_com_contexto(prompt, gemini_token)
+                else:
+                    resposta = obter_resposta_com_contexto(prompt, gemini_token)
+
                 if not resposta:
                     return
 
@@ -308,6 +515,10 @@ class Chat(commands.Cog):
                 resposta_discord = self._restore_mentions(
                     resposta_discord, self.channel_mentions.get(message.channel.id, {})
                 )
+
+                # Atualiza conversa ativa se foi mencionado ou é DM
+                if foi_mencionado or eh_dm:
+                    self._atualizar_conversa(message)
 
                 # Evita repetição comparando com as últimas 3 respostas do bot
                 bot_name = getattr(self.bot.user, "display_name", None) or self.bot.user.name
@@ -374,23 +585,151 @@ class Chat(commands.Cog):
                     message.author
                 )
 
-                await message.reply(resposta_discord)
+                # Divide a resposta em partes se for muito grande, tratando ---BREAK--- e Tenor como separadores
+                breaks = resposta_discord.split("---BREAK---")
+                first = True
+                for block in breaks:
+                    block = block.strip()
+                    if not block:
+                        continue
+                    parts = TENOR_RE.split(block)
+                    for part in parts:
+                        part = part.strip()
+                        if not part:
+                            continue
+                        if first:
+                            # Verifica se deve usar reply ou mensagem solta
+                            # Usa reply só se não está em conversa ativa (primeira interação) ou se foi mencionada diretamente
+                            deve_usar_reply = foi_mencionado and not em_conversa
+                            
+                            if deve_usar_reply:
+                                for chunk in split_text(part):
+                                    await message.reply(chunk)
+                            else:
+                                for chunk in split_text(part):
+                                    await message.channel.send(chunk)
+                            first = False
+                        else:
+                            # Partes seguintes são mensagens soltas
+                            for chunk in split_text(part):
+                                await message.channel.send(chunk)
 
                 history.append((author_name, message_content))
                 history.append((bot_name, resposta_discord))
                 
+                # Marca o usuário como em conversa ativa (renova timeout)
+                self._atualizar_conversa(message)
+                
                 # Aprende novos fatos da conversa
                 await self._aprender_fatos(message.channel.id, message_content, author_name, gemini_token)
+
+        # === RESPOSTA ESPONTÂNEA ===
+        elif await self._deve_responder_espontaneo(message):
+            gemini_token = self.bot.config.get('gemini_token')
+            if gemini_token:
+                async with message.channel.typing():
+                    resposta = await self._gerar_resposta_espontanea(message, gemini_token)
+                    if resposta:
+                        breaks = resposta.split("---BREAK---")
+                        first = True
+                        for block in breaks:
+                            block = block.strip()
+                            if not block:
+                                continue
+                            parts = TENOR_RE.split(block)
+                            for part in parts:
+                                part = part.strip()
+                                if not part:
+                                    continue
+                                if first:
+                                    # Espontâneo sempre envia como mensagem solta
+                                    await message.channel.send(part)
+                                    first = False
+                                else:
+                                    await message.channel.send(part)
+                        
+                        # Quando responde espontaneamente, também inicia/renova a conversa
+                        self._atualizar_conversa(message)
+
+    async def _deve_responder_espontaneo(self, message: discord.Message) -> bool:
+        # Verifica se espontâneo está ativo no servidor
+        guild_id = message.guild.id if message.guild else message.channel.id
+        if not self._espontaneo_ativo.get(guild_id, True):  # True por padrão
+            return False
+
+        # Ignora mensagens curtas, comandos, bots
+        if message.author.bot:
+            return False
+        if len(message.content.strip()) < 20:
+            return False
+        if message.content.startswith(('/', '!', '.', '?')):
+            return False
+
+        # Verifica cooldown do canal
+        import time as _time
+        agora = _time.time()
+        ultimo = self._espontaneo_cooldown.get(message.channel.id, 0)
+        if agora - ultimo < self._ESPONTANEO_COOLDOWN_SEG:
+            return False
+
+        # Rolagem de dado
+        if random.random() > self._ESPONTANEO_CHANCE:
+            return False
+
+        return True
+
+    async def _gerar_resposta_espontanea(self, message: discord.Message, gemini_token: str) -> Optional[str]:
+        import time as _time
+
+        history = self.channel_history.get(message.channel.id, deque())
+        context_lines = [f"{author}: {content}" for author, content in history]
+        context_lines.append(f"{message.author.display_name}: {message.content}")
+        contexto = "\n".join(context_lines[-5:])
+
+        # === FASE 1: decisão simples, sem personalidade ===
+        decisao_prompt = (
+            "Analise essa conversa de Discord e decida se vale comentar.\n\n"
+            "Conversa:\n" + contexto + "\n\n"
+            "Responda SIM APENAS se a última mensagem:\n"
+            "- Contém uma situação engraçada, resultado de dado, placar, erro ou conquista clara\n"
+            "- Faz uma pergunta aberta que qualquer pessoa poderia responder\n"
+            "- Tem uma virada inesperada ou algo surpreendente\n\n"
+            "Responda NAO se:\n"
+            "- For só alguém falando com outra pessoa específica\n"
+            "- For resposta curta, confirmação, reação simples ('kkk', 'entendi', 'tá')\n"
+            "- For contexto interno que só os dois envolvidos entendem\n"
+            "- Não tiver gancho claro pra um comentário externo\n\n"
+            "Responda APENAS: SIM ou NAO"
+        )
+
+        decisao = _tentar_modelo_simples(decisao_prompt, gemini_token, max_tokens=5, temperature=0.1)
+        if not decisao or "NAO" in decisao.upper():
+            return None
+
+        # === FASE 2: gera resposta COM personalidade Lain ===
+        resposta_prompt = (
+            "Conversa recente no Discord:\n" + contexto + "\n\n"
+            "Você viu essa conversa e teve vontade de comentar algo. "
+            "Reaja de forma natural e curta (1 frase no máximo). "
+            "Não force referências à Wired ou tecnologia — reaja como uma pessoa normal reagiria."
+        )
+
+        resultado = obter_resposta(resposta_prompt, gemini_token)
+        if not resultado:
+            return None
+
+        self._espontaneo_cooldown[message.channel.id] = _time.time()
+        _, body = self._parse_response_mode(resultado)
+        return body or None
+
+        
 
     async def _analisar_acao_fisica_inapropriada(self, mensagem: str, gemini_token: Optional[str]) -> bool:
         """Analisa se a mensagem contém ação física inapropriada direcionada ao bot usando IA."""
         if not gemini_token:
             return False
-        
+
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=gemini_token)
-            
             prompt = f"""Analise se a mensagem contém uma ação física SEXUAL, INVASIVA ou DESCONFORTÁVEL direcionada a "Lain" (o bot).
 
 Mensagem: "{mensagem}"
@@ -402,21 +741,17 @@ Classifique como:
 IMPORTANTE: Palavras isoladas SEM VERBO CONJUGADO não são ações físicas. "ar" sozinho não é ação. "vou te abraçar" É ação.
 
 Responda APENAS com uma palavra: SIM ou NAO."""
-            
-            model = genai.GenerativeModel('gemini-2.0-flash')
-            response = model.generate_content(
-                prompt,
-                generation_config={"temperature": 0.1, "max_output_tokens": 10}
-            )
-            
-            resultado = response.text.strip().upper()
-            
-            if "SIM" in resultado:
+
+            resultado = _tentar_modelo_simples(prompt, gemini_token, max_tokens=10, temperature=0.1)
+            if not resultado:
+                return False
+
+            if "SIM" in resultado.upper():
                 registrar_log(f"Ação física inapropriada detectada: {mensagem[:100]}", 'warning')
                 return True
-            
+
             return False
-            
+
         except Exception as exc:
             registrar_log(f"Erro ao analisar ação física inapropriada: {exc}", 'error')
             return False
@@ -428,11 +763,8 @@ Responda APENAS com uma palavra: SIM ou NAO."""
         """
         if not gemini_token:
             return False, None
-        
+
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=gemini_token)
-            
             prompt = f"""Analise se a seguinte mensagem contém conteúdo nocivo, ameaçador ou prejudicial para a pessoa mencionada (papiro/samir).
 
 Mensagem: "{mensagem}"
@@ -445,28 +777,25 @@ Classifique como:
 - SEGURO: mensagem normal, sem conteúdo nocivo
 
 Responda APENAS com uma palavra: DELACAO, AMEACA, INTIMIDACAO, MANIPULACAO ou SEGURO."""
-            
-            model = genai.GenerativeModel('gemini-2.0-flash')
-            response = model.generate_content(
-                prompt,
-                generation_config={"temperature": 0.1, "max_output_tokens": 50}
-            )
-            
-            resultado = response.text.strip().upper()
-            
+
+            resultado = _tentar_modelo_simples(prompt, gemini_token, max_tokens=50, temperature=0.1)
+            if not resultado:
+                return False, None
+
+            resultado = resultado.upper()
             tipo_map = {
                 "DELACAO": "delacao",
                 "AMEACA": "ameaca",
                 "INTIMIDACAO": "intimidacao",
-                "MANIPULACAO": "manipulacao"
+                "MANIPULACAO": "manipulacao",
             }
-            
+
             if resultado in tipo_map:
                 registrar_log(f"Conteúdo nocivo detectado: {resultado} - Mensagem: {mensagem[:100]}", 'warning')
                 return True, tipo_map[resultado]
-            
+
             return False, None
-            
+
         except Exception as exc:
             registrar_log(f"Erro ao analisar conteúdo nocivo: {exc}", 'error')
             return False, None
@@ -615,10 +944,6 @@ Responda APENAS com uma palavra: DELACAO, AMEACA, INTIMIDACAO, MANIPULACAO ou SE
             return
         
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=gemini_token)
-            model = genai.GenerativeModel('gemini-2.0-flash')
-            
             prompt_extracao = f"""Analise esta mensagem e identifique se há algum FATO sobre a Lain (você) que deveria ser memorizado:
 
 Mensagem: "{mensagem}"
@@ -636,13 +961,11 @@ Exemplos:
 - "legal" → NENHUM
 
 Responda AGORA:"""
-            
-            response = model.generate_content(
-                prompt_extracao,
-                generation_config={"temperature": 0.2, "max_output_tokens": 50}
-            )
-            
-            fato_extraido = response.text.strip()
+
+            fato_extraido = _tentar_modelo_simples(prompt_extracao, gemini_token, max_tokens=50, temperature=0.2)
+            if not fato_extraido:
+                return
+            fato_extraido = fato_extraido.strip()
             
             if fato_extraido and fato_extraido.upper() != "NENHUM" and len(fato_extraido) > 5:
                 # Adiciona o fato à lista do canal

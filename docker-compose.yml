@@ -1,0 +1,49 @@
+services:
+  lainbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lainbot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PYTHONUNBUFFERED: 1
+      PYTHONDONTWRITEBYTECODE: 1
+      # Limpa os caminhos Windows do .env — no container o ffmpeg vem do apt (/usr/bin/ffmpeg)
+      PENIBOT_FFMPEG: ""
+      PENIBOT_FFPROBE: ""
+
+    # Persiste dados e logs entre rebuilds
+    volumes:
+      - lainbot_data:/app/data
+      - lainbot_logs:/app/logs
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    networks:
+      - lainbot_network
+
+volumes:
+  lainbot_data:
+    driver: local
+  lainbot_logs:
+    driver: local
+
+networks:
+  lainbot_network:
+    driver: bridge

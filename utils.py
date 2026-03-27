@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import textwrap
+import base64
+
 import asyncio
 import json
 import logging
@@ -15,7 +18,8 @@ from typing import Any, Dict, Optional
 from urllib.parse import quote
 
 import discord
-import google.generativeai as genai
+import google.genai as genai
+from google.genai import types
 import requests
 from bs4 import BeautifulSoup
 
@@ -25,23 +29,15 @@ from constants import PERSONALIDADE_LAIN
 # Caminhos e diretórios compartilhados
 # ----------------------------------------------------------------------------
 
-APP_NAME = "LainBot"
+# Configuração de diretórios (Local na pasta do bot)
+PROJECT_ROOT = Path(__file__).parent
+APPDATA_BASE = PROJECT_ROOT / "data"
+LOG_DIR = PROJECT_ROOT / "logs"
+LOG_FILE_PATH = LOG_DIR / "bot_logs.txt"
 
-
-def _resolve_appdata_base() -> Path:
-    base = os.getenv("APPDATA") or os.getenv("LOCALAPPDATA") or str(Path.home() / ".config")
-    path = Path(base) / APP_NAME
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-APPDATA_BASE = _resolve_appdata_base()
-APPDATA_BASE_RESOLVED = APPDATA_BASE.resolve()
-APPDATA_IS_VIRTUALIZED = APPDATA_BASE_RESOLVED != APPDATA_BASE
 MUSIC_CACHE_DIR = APPDATA_BASE / "music_cache"
 FICHAS_DIR = APPDATA_BASE / "fichas"
 INVENTARIOS_DIR = APPDATA_BASE / "inventarios"
-LOG_DIR = APPDATA_BASE / "logs"
 KNOWLEDGE_DIR = APPDATA_BASE / "knowledge"
 
 
@@ -60,8 +56,8 @@ LOG_FILE_PATH = LOG_DIR / "bot_logs.txt"
 def get_appdata_locations() -> Dict[str, Path | bool]:
     return {
         "logical": APPDATA_BASE,
-        "resolved": APPDATA_BASE_RESOLVED,
-        "is_virtualized": APPDATA_IS_VIRTUALIZED,
+        "resolved": APPDATA_BASE.resolve(),
+        "is_virtualized": False,
     }
 
 
@@ -92,6 +88,16 @@ async def send_temp_message(channel: discord.abc.Messageable, content: str, dele
     except (discord.Forbidden, discord.NotFound):
         pass
 
+def descobrir_modelos_disponiveis(gemini_token: str) -> list[str]:
+    """Descobre e lista os modelos Gemini disponíveis para a API key."""
+    try:
+        client = genai.Client(api_key=gemini_token)
+        modelos = [m.name for m in client.models.list()]
+        registrar_log(f"Modelos Gemini disponíveis ({len(modelos)}): {modelos}", "info")
+        return modelos
+    except Exception as exc:
+        registrar_log(f"Erro ao listar modelos Gemini: {exc}", "warning")
+        return []
 
 async def send_temp_followup(
     interaction: discord.Interaction,
@@ -104,6 +110,43 @@ async def send_temp_followup(
         await msg.delete()
     except (discord.Forbidden, discord.NotFound):
         registrar_log("Sem permissão para deletar followup temporário.", "warning")
+
+
+def split_text(text: str, limit: int = 1900) -> list[str]:
+    """Divide um texto em partes respeitando o limite do Discord e quebras de linha."""
+    if not text:
+        return []
+    if len(text) <= limit:
+        return [text]
+    
+    parts = []
+    # Divide por quebras de linha primeiro
+    lines = text.split('\n')
+    current_part = ""
+    
+    for line in lines:
+        if len(current_part) + len(line) + 1 <= limit:
+            if current_part:
+                current_part += '\n' + line
+            else:
+                current_part = line
+        else:
+            if current_part:
+                parts.append(current_part)
+            
+            # Se a linha sozinha for maior que o limite
+            if len(line) > limit:
+                # Divide a linha em pedaços
+                for chunk in textwrap.wrap(line, width=limit, break_long_words=True, replace_whitespace=False):
+                    parts.append(chunk)
+                current_part = ""
+            else:
+                current_part = line
+                
+    if current_part:
+        parts.append(current_part)
+        
+    return parts
 
 
 # ----------------------------------------------------------------------------
@@ -415,17 +458,8 @@ WIKI_KB = WikipediaKnowledgeBase(KNOWLEDGE_DIR)
 def refine_summary_with_gemini(term: str, text: str, gemini_token: str) -> Optional[str]:
     if not gemini_token or not text:
         return None
-    try:
-        genai.configure(api_key=gemini_token)
-        model = genai.GenerativeModel("models/gemini-2.0-flash-lite")
-        response = model.generate_content(
-            f"Resuma em 3 frases objetivas o verbete sobre '{term}'.\n{text[:2000]}",
-            generation_config={"temperature": 0.3, "max_output_tokens": 200},
-        )
-        return (response.text or "").strip() or None
-    except Exception as exc:  # pylint: disable=broad-except
-        registrar_log(f"Falha ao refinar resumo com Gemini: {exc}", "warning")
-        return None
+    prompt = f"Resuma em 3 frases objetivas o verbete sobre '{term}'.\n{text[:2000]}"
+    return _tentar_modelo_simples(prompt, gemini_token, max_tokens=200, temperature=0.3)
 
 
 def buscar_wikipedia(termo: str, lang: str = "pt", gemini_token: Optional[str] = None) -> Optional[str]:
@@ -466,64 +500,170 @@ GENERATION_CONFIG = {
 }
 
 MODEL_PRIORITIES = [
-    "models/gemini-2.5-flash",
-    "models/gemini-2.5-pro",
-    "models/gemini-2.5-flash-lite",
-    "models/gemini-2.0-flash",
-    "models/gemini-2.0-flash-lite",
+    "models/gemini-3.1-flash-lite-preview",   # 25/500 ✅
+    "models/gemini-3-flash-preview",           # 1/20
+    "models/gemini-2.5-flash-lite",            # fallback
+    "models/gemini-2.0-flash",                 # fallback
+    "models/gemini-2.0-flash-lite",            # fallback
+    "models/gemini-2.5-flash",                 # último recurso
 ]
 
-
 def _extrair_texto_gemini(resposta) -> str:
-    partes: list[str] = []
-    for candidate in getattr(resposta, "candidates", []) or []:
-        finish_reason = getattr(candidate, "finish_reason", None)
-        if str(getattr(finish_reason, "name", finish_reason)).upper().endswith("SAFETY"):
-            registrar_log("Candidate bloqueado (safety).", "warning")
-            continue
-        content = getattr(candidate, "content", None)
-        if not content:
-            continue
-        for part in getattr(content, "parts", []) or []:
-            texto = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
-            if texto:
-                partes.append(texto)
-        if partes:
-            break
-    return "\n".join(partes).strip()
+    """Extrai o texto da resposta do Gemini, lidando com segurança e erros."""
+    try:
+        if not resposta:
+            return ""
+        # O novo SDK já fornece .text que resolve candidatos
+        return (resposta.text or "").strip()
+    except Exception as exc:
+        registrar_log(f"Erro ao extrair texto do Gemini: {exc}", "warning")
+        return ""
+
+
+def _is_model_unavailable_error(exc: Exception) -> bool:
+    """Retorna True se o erro indica que o modelo não existe ou foi descontinuado."""
+    msg = str(exc).lower()
+    # NÃO incluir "resource has been exhausted" aqui — essa é mensagem de quota, não de modelo inexistente
+    return any(kw in msg for kw in (
+        "not found", "deprecated", "does not exist",
+        "model not found", "is not supported",
+    ))
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    """Retorna True se o erro indica quota/rate limit."""
+    msg = str(exc).lower()
+    return any(kw in msg for kw in (
+        "429", "quota", "resource_exhausted", "rate limit",
+        "resource has been exhausted",  # Mensagem padrão do Google para quota esgotada
+    ))
+
+
+def _tentar_modelo_com_imagem(
+    model_name: str,
+    texto: str,
+    img_b64: str,
+    content_type: str,
+    gemini_token: str
+) -> Optional[str]:
+    try:
+        client = genai.Client(api_key=gemini_token)
+        # Decodifica base64 para bytes se necessário
+        img_bytes = base64.b64decode(img_b64) if isinstance(img_b64, str) else img_b64
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[
+                types.Part.from_bytes(data=img_bytes, mime_type=content_type),
+                texto.strip()
+            ],
+            config=types.GenerateContentConfig(
+                system_instruction=PERSONALIDADE_LAIN,
+                temperature=GENERATION_CONFIG["temperature"],
+                top_p=GENERATION_CONFIG["top_p"],
+                top_k=GENERATION_CONFIG["top_k"],
+                max_output_tokens=GENERATION_CONFIG["max_output_tokens"],
+            )
+        )
+        texto_resp = _extrair_texto_gemini(response)
+        if texto_resp:
+            return texto_resp
+    except Exception as exc:
+        if _is_quota_error(exc):
+            registrar_log(f"Quota esgotada para {model_name} (imagem).", "warning")
+        elif _is_model_unavailable_error(exc):
+            registrar_log(f"Modelo {model_name} não suporta visão, pulando.", "warning")
+        else:
+            registrar_log(f"Erro Gemini imagem ({model_name}): {exc}", "warning")
+    return None
+
+def obter_resposta_com_imagem(texto: str, img_b64: str, content_type: str, gemini_token: str) -> Optional[str]:
+    modelos_visao = [
+        "models/gemini-3.1-flash-lite-preview",  
+        "models/gemini-3-flash-preview",
+        "models/gemini-2.5-flash-lite",
+        "models/gemini-2.5-flash",
+    ]
+    for model_name in modelos_visao:
+        resultado = _tentar_modelo_com_imagem(model_name, texto, img_b64, content_type, gemini_token)
+        if resultado:
+            return resultado
+    return None
 
 
 def _tentar_modelo(model_name: str, entrada: str, gemini_token: str) -> Optional[str]:
     try:
-        genai.configure(api_key=gemini_token)
-        model = genai.GenerativeModel(model_name=model_name, system_instruction=PERSONALIDADE_LAIN)
-        resposta = model.generate_content([
-            {"role": "user", "parts": [{"text": entrada.strip()}]}
-        ], generation_config=GENERATION_CONFIG)
-        texto = _extrair_texto_gemini(resposta)
+        client = genai.Client(api_key=gemini_token)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=entrada.strip(),
+            config=types.GenerateContentConfig(
+                system_instruction=PERSONALIDADE_LAIN,
+                temperature=GENERATION_CONFIG["temperature"],
+                top_p=GENERATION_CONFIG["top_p"],
+                top_k=GENERATION_CONFIG["top_k"],
+                max_output_tokens=GENERATION_CONFIG["max_output_tokens"],
+            )
+        )
+        texto = _extrair_texto_gemini(response)
         if texto:
             return texto
     except Exception as exc:  # pylint: disable=broad-except
-        registrar_log(f"Erro Gemini ({model_name}): {exc}", "warning")
+        err_msg = str(exc)
+        if _is_quota_error(exc):
+            registrar_log(f"Quota esgotada para {model_name}, tentando próximo.", "warning")
+        elif _is_model_unavailable_error(exc):
+            registrar_log(f"Modelo {model_name} indisponível ou descontinuado, pulando. Erro: {err_msg[:120]}", "warning")
+        else:
+            registrar_log(f"Erro Gemini ({model_name}): {err_msg}", "warning")
+    return None
+
+
+def _tentar_modelo_simples(
+    prompt: str,
+    gemini_token: str,
+    max_tokens: int = 50,
+    temperature: float = 0.1,
+) -> Optional[str]:
+    """Tenta obter resposta simples (sem system instruction) percorrendo MODEL_PRIORITIES."""
+    config = {"temperature": temperature, "max_output_tokens": max_tokens}
+    for model_name in MODEL_PRIORITIES:
+        try:
+            client = genai.Client(api_key=gemini_token)
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt.strip(),
+                config=types.GenerateContentConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                )
+            )
+            text = _extrair_texto_gemini(response)
+            if text:
+                return text
+        except Exception as exc:  # pylint: disable=broad-except
+            err_msg = str(exc)
+            if _is_quota_error(exc):
+                registrar_log(f"Quota esgotada para {model_name}, tentando próximo.", "warning")
+                continue
+            if _is_model_unavailable_error(exc):
+                registrar_log(f"Modelo {model_name} indisponível, tentando próximo. Erro: {err_msg[:120]}", "warning")
+                continue
+            registrar_log(f"Erro com {model_name}: {err_msg}", "warning")
     return None
 
 
 def obter_resposta(entrada: str, gemini_token: Optional[str]) -> str:
     if not gemini_token:
         registrar_log("GEMINI_TOKEN ausente.", "error")
-        return random.choice([
-            "tô meio cansada agora... posso falar depois?",
-            "mto sono aqui... tenta de novo.",
-        ])
+        return None
+
     for model_name in MODEL_PRIORITIES:
         texto = _tentar_modelo(model_name, entrada, gemini_token)
         if texto:
             return texto
-    return random.choice([
-        "o sinal tá fraco e eu tô com sono... tenta de novo.",
-        "acho que exagerei no café... preciso respirar antes de responder.",
-        "minha cabeça tá pesada agora. repete mais tarde, por favor.",
-    ])
+
+    registrar_log("Todos os modelos Gemini falharam.", "error")
+    return None
 
 
 def obter_resposta_com_contexto(entrada: str, gemini_token: Optional[str]) -> str:

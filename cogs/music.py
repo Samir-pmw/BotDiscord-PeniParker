@@ -18,7 +18,8 @@ from utils import MUSIC_CACHE_DIR, registrar_log, send_temp_followup, ensure_app
 # --- Configuração do Player ---
 
 ytdl_format_options = {
-    'format': 'bestaudio[protocol^=http][ext=m4a]/bestaudio[protocol^=http]/bestaudio',
+    'format': 'ba/b',
+    'extractaudio': True,
     'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
     'restrictfilenames': True,
     'noplaylist': False,
@@ -55,7 +56,7 @@ ffmpeg_options = {
 
 
 AUDIO_EXTENSIONS = {'.mp3', '.m4a', '.webm', '.opus', '.mp4'}
-MUSIC_CACHE_PREFIX = "https://open.spotify.com/playlist/3wpiw1YCHP1O7feGcdogtm?si=bb2ad16c3d504903bot_audio_"
+MUSIC_CACHE_PREFIX = "bot_audio_"
 MUSIC_CACHE_MAX_AGE_SECONDS = 60 * 60 * 6  # 6 horas
 
 def _resolve_binary(env_var: str, binary_name: str):
@@ -63,14 +64,22 @@ def _resolve_binary(env_var: str, binary_name: str):
     custom_value = os.getenv(env_var)
     if custom_value:
         cleaned_value = custom_value.strip().strip('\'"')
-        candidate = Path(cleaned_value).expanduser()
-        if candidate.is_dir():
+        path_obj = Path(cleaned_value).expanduser()
+        
+        # Tenta resolver relativo ao projeto se não for absoluto
+        if not path_obj.is_absolute():
+            project_root = Path(__file__).parent.parent
+            path_obj = project_root / path_obj
+
+        if path_obj.is_dir():
             exe_name = binary_name + ('.exe' if os.name == 'nt' else '')
-            candidate = candidate / exe_name
-        if candidate.is_file():
-            return str(candidate)
+            path_obj = path_obj / exe_name
+            
+        if path_obj.is_file():
+            return str(path_obj.resolve())
+        
         registrar_log(
-            f"{env_var} foi definido, mas '{candidate}' não existe ou não é um arquivo executável.",
+            f"{env_var} foi definido, mas '{path_obj}' não existe ou não é um arquivo executável.",
             'warning'
         )
     return shutil.which(binary_name)
@@ -192,7 +201,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
             def build_options(source_options):
                 opts = deepcopy(source_options)
                 opts.update({
-                    'format': 'bestaudio/best',
+                    'format': 'ba/b',
                     'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
                     'noplaylist': True,
                     'overwrites': True,
@@ -377,7 +386,13 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 url = f"ytsearch:{url}"
 
             try:
-                data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
+                data = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream)),
+                    timeout=35
+                )
+            except asyncio.TimeoutError:
+                registrar_log(f"Timeout na extração do YTDL para {url}", 'warning')
+                raise ValueError("A busca da música demorou demais. Tente novamente.")
             except PostProcessingError as err:
                 registrar_log(
                     f"Falha no pós-processamento ({err}); repetindo sem conversão.",
@@ -475,11 +490,12 @@ class ControllerView(discord.ui.View):
 
         await self.cog._reset_player(interaction.guild)
         await self.cog._disconnect_player(interaction.guild)
-        await interaction.response.send_message(
-            f"⏹️ Player parado por {interaction.user.mention}. (essa msg será deletada)", 
-            ephemeral=False, 
-            delete_after=40
-        )
+        
+        content = f"⏹️ Player parado por {interaction.user.mention}. (essa msg será deletada)"
+        if interaction.response.is_done():
+            await interaction.followup.send(content)
+        else:
+            await interaction.response.send_message(content, ephemeral=False, delete_after=40)
     
     @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.grey)
     async def skip(self, interaction: discord.Interaction, _button: discord.ui.Button):
@@ -527,10 +543,51 @@ class Music(commands.Cog):
             self.sp = None
         
         self._purge_music_cache()
-        # Inicia as tarefas de fundo
+
+    def cog_load(self):
+        import sys
+        if sys.version_info >= (3, 12):
+            registrar_log(
+                f"AVISO: Python {sys.version_info.major}.{sys.version_info.minor} detectado. "
+                "discord.py voice tem problemas conhecidos com Python 3.12+. "
+                "Use Python 3.11 para evitar erros 4017 repetidos ao entrar em canais de voz.",
+                "warning"
+            )
+            print(
+                f"[AVISO] Python {sys.version_info.major}.{sys.version_info.minor} não é suportado para voz. "
+                "Instale Python 3.11."
+            )
+
         self.check_inactivity.start()
         self.check_controller_position.start()
         self.cleanup_music_cache.start()
+
+        if not discord.opus.is_loaded():
+            registrar_log("Opus não carregado — música de voz não funcionará. Coloque libopus-0.x64.dll na raiz ou em /bins/.", "error")
+            print("[ERRO CRÍTICO] Opus não carregado. Veja os logs.")
+        else:
+            registrar_log("Opus carregado. Player de voz pronto.", "info")
+
+        if FFMPEG_AVAILABLE:
+            registrar_log(f"FFmpeg pronto: {FFMPEG_PATH}", "info")
+            print(f"[INFO] FFmpeg: {FFMPEG_PATH}")
+        else:
+            registrar_log("FFmpeg NÃO encontrado — /tocar vai falhar. Verifique a instalação.", "error")
+            print("[ERRO CRÍTICO] FFmpeg não encontrado. Veja os logs.")
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Desconecta conexões de voz residuais de sessões anteriores ao reiniciar."""
+        for guild in self.bot.guilds:
+            if guild.voice_client:
+                registrar_log(
+                    f"Limpando conexão de voz residual em '{guild.name}' (sessão anterior).",
+                    "info"
+                )
+                try:
+                    await guild.voice_client.disconnect(force=True)
+                except Exception:
+                    pass
 
     def cog_unload(self):
         # Para as tarefas quando o cog é descarregado
@@ -543,35 +600,64 @@ class Music(commands.Cog):
     async def _ensure_voice(self, interaction: discord.Interaction):
         """Garante que o bot esteja no canal de voz do usuário."""
         if not interaction.user.voice:
-            await interaction.response.send_message("Você precisa estar em um canal de voz!", ephemeral=True, delete_after=3)
-            return None
+            return None, "Você precisa estar em um canal de voz!"
 
         guild_id = interaction.guild.id
         lock = self.voice_locks.setdefault(guild_id, asyncio.Lock())
         async with lock:
             voice_client = interaction.guild.voice_client
-            if voice_client and not voice_client.is_connected():
+
+            # Já conectado e funcionando
+            if voice_client and voice_client.is_connected():
+                self.last_activity[guild_id] = discord.utils.utcnow()
+                return voice_client, None
+
+            # Voice client existe mas não está conectado — limpa sem esperar
+            # (o loop de espera de 35s anterior causava deadlock com o reconnect interno do discord.py)
+            if voice_client:
+                registrar_log(f"Voice client obsoleto em '{interaction.guild.name}'. Limpando...", "warning")
                 try:
                     await voice_client.disconnect(force=True)
                 except Exception:
                     pass
-                voice_client = None
+                await asyncio.sleep(1)
 
-            if not voice_client:
+            # Conecta com reconnect=False para evitar o loop interno do discord.py.
+            # Erro 4017 = "sessão já reconectando" (a sessão anterior ainda não fechou no Discord).
+            # Solução: retry manual com delay para dar tempo da sessão fechar, limitado a 3 tentativas.
+            for attempt in range(3):
                 try:
-                    voice_client = await interaction.user.voice.channel.connect(reconnect=False)
+                    voice_client = await interaction.user.voice.channel.connect(timeout=20, reconnect=False)
+                    self.last_activity[guild_id] = discord.utils.utcnow()
+                    return voice_client, None
+                except discord.ConnectionClosed as e:
+                    if getattr(e, 'code', None) == 4017 and attempt < 2:
+                        wait = 3 * (attempt + 1)
+                        registrar_log(f"Erro 4017 (tentativa {attempt + 1}/3). Aguardando {wait}s...", "warning")
+                        await asyncio.sleep(wait)
+                        continue
+                    return None, "Não foi possível conectar ao canal de voz (sessão ocupada)."
                 except asyncio.TimeoutError:
-                    await interaction.response.send_message("Não consegui me conectar. Tente de novo.", ephemeral=True)
-                    return None
+                    return None, "Não consegui me conectar ao canal de voz (tempo esgotado)."
                 except discord.Forbidden:
-                    await interaction.response.send_message("Não tenho permissão para entrar nesse canal.", ephemeral=True)
-                    return None
-                except discord.ClientException:
-                    await interaction.response.send_message("Já estou tentando conectar em outro canal. Aguarde alguns segundos.", ephemeral=True)
-                    return None
+                    return None, "Não tenho permissão para entrar nesse canal de voz."
+                except discord.ClientException as e:
+                    if "4017" in str(e) and attempt < 2:
+                        wait = 3 * (attempt + 1)
+                        registrar_log(f"Erro 4017 (tentativa {attempt + 1}/3). Aguardando {wait}s...", "warning")
+                        await asyncio.sleep(wait)
+                        continue
+                    # Pode já estar conectado por race condition
+                    voice_client = interaction.guild.voice_client
+                    if voice_client and voice_client.is_connected():
+                        self.last_activity[guild_id] = discord.utils.utcnow()
+                        return voice_client, None
+                    return None, f"Erro de conexão: {e}"
+                except Exception as e:
+                    registrar_log(f"Erro ao conectar ao canal de voz: {e}", "error")
+                    return None, f"Não consegui entrar no canal de voz: {e}"
 
-            self.last_activity[guild_id] = discord.utils.utcnow()
-            return voice_client
+            return None, "Não foi possível conectar ao canal de voz após 3 tentativas."
 
     @staticmethod
     def _cleanup_track_entry(track: dict):
@@ -592,15 +678,26 @@ class Music(commands.Cog):
             self._cleanup_track_entry(current)
             loop_mode = self.loop_state.get(guild_id, "off")
 
-            if loop_mode == "single":
-                self.queue[guild_id].insert(0, current)
-            elif loop_mode == "queue":
-                self.queue[guild_id].append(current)
+            # Previne loop infinito se a música falhar imediatamente
+            current_retries = current.get('retries', 0)
+            if current_retries > 2:
+                registrar_log(f"Música '{current.get('title')}' falhou 3 vezes seguidas. Pulando...", 'warning')
+                channel = self.controller_channels.get(guild_id)
+                if channel:
+                    await channel.send(f"⚠️ Pulei **{current.get('title')}** porque ela não quis carregar.", delete_after=10)
+            else:
+                if loop_mode == "single":
+                    current['retries'] = current_retries + 1
+                    self.queue[guild_id].insert(0, current)
+                elif loop_mode == "queue":
+                    current['retries'] = 0 # Reseta retries ao ir pro fim da fila
+                    self.queue[guild_id].append(current)
             
             del self.now_playing[guild_id]
         
         if guild_id not in self.queue or not self.queue[guild_id]:
             # Fila vazia, reseta e desconecta
+            registrar_log(f"Fila vazia em '{guild.name}', desconectando...", 'info')
             await self._reset_player(guild)
             await self._disconnect_player(guild)
             return
@@ -615,8 +712,14 @@ class Music(commands.Cog):
             if guild.voice_client:
                 await guild.voice_client.disconnect()
             return
-        
+
         voice_client = guild.voice_client
+        if not voice_client or not voice_client.is_connected():
+            # Bot desconectou inesperadamente — limpa o estado sem tentar reconectar
+            registrar_log(f"Voice client ausente em '{guild.name}' ao tentar tocar. Limpando fila.", 'warning')
+            await self._reset_player(guild)
+            return
+
         if voice_client:
             current_track = None
             try:
@@ -629,7 +732,10 @@ class Music(commands.Cog):
                 if not player:
                     player = await YTDLSource.from_url(current_track['webpage_url'], loop=self.bot.loop, stream=True)
                 if player is None:
-                    # Se falhar, pula para a próxima
+                    # Se falhar, tenta avisar no canal e pula para a próxima
+                    channel = self.controller_channels.get(guild_id)
+                    if channel:
+                        await channel.send(f"❌ Não foi possível carregar a música: **{current_track.get('title', 'Desconhecida')}**. Pulando...", delete_after=10)
                     await self._play_finished(guild)
                     return
 
@@ -638,17 +744,25 @@ class Music(commands.Cog):
                 
                 def _after_playback(error):
                     if error:
-                        registrar_log(f"Erro durante a reprodução: {error}", 'warning')
+                        registrar_log(f"Playback finalizado com ERRO em '{guild.name}': {error}", 'error')
+                    else:
+                        registrar_log(f"Playback finalizado normalmente em '{guild.name}'.", 'info')
                     asyncio.run_coroutine_threadsafe(self._play_finished(guild), self.bot.loop)
 
                 voice_client.play(player, after=_after_playback)
+                registrar_log(f"Iniciando playback em '{guild.name}': {current_track.get('title')}", 'info')
                 await self._update_controller(guild)
                 self.last_activity[guild_id] = discord.utils.utcnow()
 
             except Exception as e:
-                registrar_log(f"Erro ao tocar próxima música: {e}", 'error')
+                registrar_log(f"Erro ao tocar próxima música em '{guild.name}': {e}", 'error')
                 if current_track:
-                    self._cleanup_track_entry(current_track)
+                    current_track['retries'] = current_track.get('retries', 0) + 1
+                    # Se falhou, coloca de volta no topo para tentar de novo (até o limite no _play_finished)
+                    self.queue[guild_id].insert(0, current_track)
+                
+                # Aguarda um pouco antes de tentar a próxima para não sobrecarregar
+                await asyncio.sleep(2)
                 await self._play_finished(guild)
 
     async def _reset_player(self, guild: discord.Guild):
@@ -698,6 +812,7 @@ class Music(commands.Cog):
     async def _disconnect_player(self, guild: discord.Guild):
         """Desconecta o bot do canal de voz."""
         if guild.voice_client:
+            registrar_log(f"Desconectando bot do canal em '{guild.name}'...", 'info')
             await guild.voice_client.disconnect()
 
     def _buscar_musicas_spotify(self, url):
@@ -912,35 +1027,58 @@ class Music(commands.Cog):
                     'error'
                 )
                 return
-            
-            voice_client = await self._ensure_voice(interaction)
-            if not voice_client:
-                await interaction.followup.send("Não consegui entrar no canal de voz.", ephemeral=True)
+
+            # Verifica se o usuário está em um canal de voz ANTES de fazer qualquer coisa demorada
+            if not interaction.user.voice:
+                await interaction.followup.send("❌ Você precisa estar em um canal de voz!", ephemeral=True)
                 return
 
-            # Define o canal do controlador
-            self.controller_channels[interaction.guild.id] = interaction.channel
+            registrar_log(f"Comando /tocar recebido: {url} (Usuário: {interaction.user.name})", "info")
 
-            # Verifica se é Spotify
+            guild_id = interaction.guild.id
+
+            # Playlists: conecta primeiro pois o processamento é em background
             if 'spotify.com' in url:
+                voice_client, error_msg = await self._ensure_voice(interaction)
+                if not voice_client:
+                    await interaction.followup.send(f"❌ {error_msg or 'Não consegui conectar ao canal de voz.'}", ephemeral=True)
+                    return
+                self.controller_channels[guild_id] = interaction.channel
                 self.bot.loop.create_task(self._processar_playlist_spotify(interaction, url))
                 return
 
-            # Verifica se é uma playlist do YouTube
             if 'youtube.com/playlist?list=' in url:
+                voice_client, error_msg = await self._ensure_voice(interaction)
+                if not voice_client:
+                    await interaction.followup.send(f"❌ {error_msg or 'Não consegui conectar ao canal de voz.'}", ephemeral=True)
+                    return
+                self.controller_channels[guild_id] = interaction.channel
                 self.bot.loop.create_task(self._processar_playlist_youtube(interaction, url))
                 return
 
-            # Toca do YouTube (ou link direto)
+            # Música única: busca o áudio PRIMEIRO, depois conecta ao canal de voz.
+            # Isso evita que o bot fique no canal sem tocar enquanto baixa/extrai o áudio,
+            # o que causava loops de reconexão (erro 4017) e rate limit do Discord.
+            registrar_log(f"Buscando áudio: {url}", "info")
             player = await YTDLSource.from_url(url, loop=self.bot.loop, stream=True)
             if player is None:
                 await interaction.followup.send("❌ Não foi possível buscar a música.", ephemeral=True)
                 return
 
-            guild_id = interaction.guild.id
+            # Áudio pronto — agora conecta ao canal de voz (operação rápida)
+            voice_client, error_msg = await self._ensure_voice(interaction)
+            if not voice_client:
+                msg = error_msg or "Não consegui conectar ao canal de voz."
+                await interaction.followup.send(f"❌ {msg}", ephemeral=True)
+                return
+
+            registrar_log(f"Voz garantida. Adicionando à fila: {player.title}", "info")
+
+            self.controller_channels[guild_id] = interaction.channel
+
             if guild_id not in self.queue:
                 self.queue[guild_id] = []
-            
+
             self.queue[guild_id].append({'title': player.title, 'webpage_url': player.webpage_url, 'player': player})
 
             await send_temp_followup(interaction, f"✅ Adicionada à fila: {player.title}", 5)
@@ -950,14 +1088,18 @@ class Music(commands.Cog):
                 await self._play_next(interaction.guild)
 
         except Exception as e:
-            print(f"[DEBUG] Erro no comando /tocar: {e}") # Adiciona print para depuração
             registrar_log(f"Erro no comando /tocar: {e}", 'error')
-            await interaction.followup.send(f"Deu um erro feio: {e}", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
 
     @app_commands.command(name="parar", description="Para a música e limpa a fila.")
     async def parar(self, interaction: discord.Interaction):
         guild = interaction.guild
-        await interaction.response.send_message("Música finalizada.", ephemeral=False, delete_after=5)
+        msg = "Música finalizada."
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=False)
+        else:
+            await interaction.response.send_message(msg, ephemeral=False, delete_after=5)
         await self._reset_player(guild)
         await self._disconnect_player(guild)
 
@@ -997,6 +1139,11 @@ class Music(commands.Cog):
                         del self.last_activity[guild_id]
                     continue
                 
+                # Se acabou de entrar (nos últimos 30s), ignora inatividade
+                time_since_last = (discord.utils.utcnow() - self.last_activity.get(guild_id, discord.utils.utcnow())).total_seconds()
+                if time_since_last < 30:
+                    continue
+
                 # Se está tocando ou tem fila, atualiza atividade
                 if voice_client.is_playing() or voice_client.is_paused() or self.queue.get(guild_id):
                     self.last_activity[guild_id] = discord.utils.utcnow()
@@ -1004,8 +1151,8 @@ class Music(commands.Cog):
                 
                 inactive_time = (discord.utils.utcnow() - self.last_activity[guild_id]).total_seconds()
 
-                # Desconecta se inativo por > 3 min
-                if inactive_time > 180:
+                # Desconecta se inativo por > 5 min (aumentado de 3 para 5 para evitar disconexão rápida)
+                if inactive_time > 300:
                     await self._reset_player(guild)
                     await self._disconnect_player(guild)
                     registrar_log(f"Desconectado de '{guild.name}' por inatividade.", 'info')

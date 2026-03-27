@@ -1,0 +1,82 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment files (never copy secrets into the image)
+.env
+.env.local
+.env.*.local
+
+# Runtime data — persisted via Docker volumes, not baked into image
+data/
+logs/
+music_cache/
+fichas/
+inventarios/
+
+# Windows binaries — libopus0 is installed via apt in the container
+bins/
+
+# Bundled FFmpeg — ffmpeg is installed via apt in the container
+ffmpeg-*/
+
+# External tooling not part of the bot
+get-shit-done/
+
+# Docker files themselves
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+README.md
+DOCKER_SETUP.md
+docs/
+
+# OS
+Thumbs.db
+.DS_Store
